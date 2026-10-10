@@ -1,0 +1,107 @@
+# 恶意脚本签名规则
+# type: regex / substring / contains_any
+# scope: response_body (默认)
+# 命中后按 shield.actions 处置
+
+rules:
+  # ---- 经典 JS 打包混淆器 (dean edwards packer) ----
+  - id: "js_packer_eval"
+    name: "Dean Edwards Packer 混淆 eval"
+    severity: high
+    type: regex
+    pattern: 'eval\(function\(p,a,c,k,e,d\)'
+    desc: "packer 打包的混淆代码，常见于网页挂马/黑产 shell"
+
+  # ---- unescape + document.write 投递链 ----
+  - id: "doc_write_unescape"
+    name: "document.write(unescape(...)) 投递"
+    severity: high
+    type: regex
+    pattern: 'document\.write\(unescape\('
+    desc: "经典落地投递手法，常用于释放恶意载荷"
+
+  # ---- String.fromCharCode 串接 (shellcode/混淆 payload) ----
+  - id: "charcode_chain"
+    name: "String.fromCharCode 长串拼接"
+    severity: medium
+    type: regex
+    pattern: '(String\.fromCharCode\([\d,\s]{40,})'
+    desc: "长串字符码拼接，疑似 shellcode/混淆 payload"
+
+  # ---- 动态属性访问执行 eval/window['eval'] ----
+  - id: "window_eval_bracket"
+    name: "window[\"eval\"] 动态执行"
+    severity: medium
+    type: regex
+    pattern: 'window\[[\x27\x22]eval[\x27\x22]\]'
+    desc: "绕过静态检测的动态 eval 调用"
+
+  # ---- 已知挖矿脚本域名特征 ----
+  - id: "crypto_miner_coinhive"
+    name: "CoinHive 挖矿脚本"
+    severity: high
+    type: substring
+    pattern: "coinhive.min.js"
+    desc: "浏览器挖矿脚本 (CoinHive 系)"
+
+  - id: "crypto_miner_coinimp"
+    name: "CoinIMP 挖矿脚本"
+    severity: high
+    type: substring
+    pattern: "coin-imp.com"
+    desc: "浏览器挖矿脚本 (CoinIMP)"
+
+  # ---- PowerShell 下载执行 (无文件落地特征) ----
+  - id: "ps_downloadstring_iex"
+    name: "PowerShell IEX 下载执行"
+    severity: critical
+    type: regex
+    pattern: '(?i)(iex|invoke-expression)[\s\S]{0,40}(new-object\s+net\.webclient|downloadstring|invoke-webrequest)'
+    desc: "PowerShell 远程下载即执行，红队/勒索常用"
+
+  # ---- shellcode 落地特征: 大段 hex/unicode 转义 ----
+  - id: "shellcode_hex_blob"
+    name: "疑似 shellcode hex 块"
+    severity: high
+    type: regex
+    pattern: '(\\x[0-9a-fA-F]{2}){20,}'
+    desc: "20+ 连续 \\xHH 字节序列，疑似 shellcode"
+
+  # ---- VBScript 下载执行 dropper ----
+  - id: "vbs_xmlhttp_dropper"
+    name: "VBScript XMLHTTP dropper"
+    severity: high
+    type: regex
+    pattern: '(?i)(MSXML2\.XMLHTTP|WinHttp\.WinHttpRequest)[\s\S]{0,80}(adodb\.stream|saveToFile)'
+    desc: "VBS/hta 下载落地 dropper 经典链"
+
+  #----Frame/Cookie 路径回传数据外带 ----
+  - id: "document_cookie_exfil"
+    name: "Cookie 外带特征"
+    severity: medium
+    type: regex
+    pattern: '(?i)(document\.cookie)[\s\S]{0,60}(\.src\s*=|location\.href|fetch\(|new\s+Image)'
+    desc: "读取 cookie 并外带，XSS 数据窃取"
+
+  # ---- 无限循环内存炸弹 ----
+  - id: "while_true_bomb"
+    name: "while(true) 内存炸弹"
+    severity: low
+    type: regex
+    pattern: 'while\s*\(\s*(?:true|1|!0)\s*\)\s*\{'
+    desc: "死循环，可能用于浏览器 DoS"
+
+  # ---- 已知 webshell 特征 ----
+  - id: "webshell_php_eval_post"
+    name: "PHP webshell eval($_POST)"
+    severity: critical
+    type: regex
+    pattern: '(?i)(eval|assert|system|passthru)\s*\(\s*\$_(POST|GET|REQUEST|COOKIE)'
+    desc: "PHP 一句话木马"
+
+  - id: "webshell_python_os_popen"
+    name: "Python os.popen 命令执行"
+    severity: high
+    type: regex
+    pattern: '(?i)(os\.popen|subprocess\.check_output|os\.system)\s*\('
+    desc: "Python 命令执行，疑似 webshell"

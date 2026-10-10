@@ -1,0 +1,58 @@
+# Proxy Guard Agent — 示例配置
+# 复制为 config.yaml 后按需修改
+
+agent:
+  name: "proxy-guard"
+  listen_host: "127.0.0.1"
+  listen_port: 8888
+  log_level: "INFO"
+  stats_interval: 30
+
+pool:
+  refresh_interval: 300
+  validate_timeout: 8
+  validate_concurrency: 60
+  min_pool_size: 8
+  max_pool_size: 200
+  sources:
+    - name: "proxyscrape_http"
+      url: "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=8000&country=all&ssl=all&anonymity=all"
+      format: "plain"
+    - name: "geonode"
+      url: "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc"
+      format: "geonode"
+  judge_urls:
+    - "http://httpbin.org/ip"
+    - "http://ifconfig.me/ip"
+
+rotator:
+  strategy: "round_robin"
+  switch_interval: 60
+  max_failures: 3
+  cooldown: 30
+
+routing:
+  mode: "auto"
+  direct_suffixes:
+    - ".cn"
+  direct_domains: []
+  proxy_domains: []
+
+shield:
+  enabled: true
+  scan_request: true
+  scan_response: true
+  block_on_detect: true
+  max_body_scan: 2097152
+  switch_on_detect: true
+  rules_dir: "rules"
+  mitm_enabled: true
+  cert_store_dir: "cert_store"
+  sqli_semantic: true
+  redline_enabled: true
+  ssrf_protect: true
+  circuit_threshold: 5
+  circuit_cooldown: 60
+  max_concurrent: 20
+  csp_inject: true
+  detect_injection: true

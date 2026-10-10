@@ -1,0 +1,52 @@
+# ============ Proxy Guard Agent .gitignore ============
+
+# ---- ⚠️ 高危：证书与私钥（绝对不能提交）----
+# MITM 根 CA 私钥，泄露=任何人可签发受信任证书做中间人
+cert_store/
+*.crt
+*.key
+*.pem
+.tmp_*.crt
+.tmp_*.key
+
+# ---- Python 运行时产物 ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.Python
+
+# ---- 虚拟环境（含本机绝对路径，暴露用户名）----
+venv/
+.venv/
+env/
+
+# ---- 离线 wheel 包（体积大，公开包无分享价值）----
+wheelhouse/
+
+# ---- 运行时日志与临时数据 ----
+*.log
+*.log.*
+logs/
+*.tmp
+*.bak
+
+# ---- IDE / 编辑器 ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- 配置覆盖（本地个人配置不入库）----
+config.local.yaml
+config.*.local.yaml
+
+# ---- 打包产物 ----
+dist/
+build/
+*.zip
+*.tar.gz

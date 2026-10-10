@@ -1,0 +1,136 @@
+# 恶意流量检测规则
+# scope: request_header / request_path / request_body
+# 命中后按 shield.actions 处置
+
+rules:
+  # ---- 扫描器 User-Agent ----
+  - id: "scanner_ua_sqlmap"
+    name: "sqlmap 扫描器"
+    severity: high
+    scope: request_header
+    field: "User-Agent"
+    type: regex
+    pattern: '(?i)sqlmap'
+    desc: "sqlmap 自动化注入扫描"
+
+  - id: "scanner_ua_nikto"
+    name: "nikto 扫描器"
+    severity: high
+    scope: request_header
+    field: "User-Agent"
+    type: regex
+    pattern: '(?i)nikto'
+    desc: "nikto Web 漏洞扫描"
+
+  - id: "scanner_ua_nmap"
+    name: "nmap 扫描器"
+    severity: medium
+    scope: request_header
+    field: "User-Agent"
+    type: regex
+    pattern: '(?i)(nmap|nmasscan)'
+    desc: "nmap/masscan 端口服务扫描"
+
+  - id: "scanner_ua_acunetix"
+    name: "Acunetix 扫描器"
+    severity: high
+    scope: request_header
+    field: "User-Agent"
+    type: regex
+    pattern: '(?i)acunetix'
+    desc: "Acunetix 漏洞扫描"
+
+  - id: "scanner_ua_general"
+    name: "通用扫描器 UA"
+    severity: medium
+    scope: request_header
+    field: "User-Agent"
+    type: regex
+    pattern: '(?i)(nessus|openvas|zgrab|fuzzer|curl/[0-9]|python-requests|go-http-client|scrapy)'
+    desc: "常见自动化扫描/爬虫 UA"
+
+  # ---- 敏感路径探测 ----
+  - id: "path_env_file"
+    name: ".env 文件探测"
+    severity: high
+    scope: request_path
+    type: regex
+    pattern: '/\.env($|[?\s])'
+    desc: "尝试读取环境配置文件，凭据窃取"
+
+  - id: "path_git_dir"
+    name: ".git 目录泄露探测"
+    severity: high
+    scope: request_path
+    type: regex
+    pattern: '/\.git/(HEAD|config|index)'
+    desc: "源码泄露探测"
+
+  - id: "path_admin_probe"
+    name: "后台路径批量探测"
+    severity: medium
+    scope: request_path
+    type: regex
+    pattern: '(?i)/(wp-admin|phpmyadmin|adminer|manager/html|jmx-console|actuator|struts)(/|$)'
+    desc: "后台/组件管理路径探测"
+
+  - id: "path_shell_upload"
+    name: "webshell 上传路径"
+    severity: high
+    scope: request_path
+    type: regex
+    pattern: '(?i)\.(php|jsp|asp|aspx)\?(.{0,30})?=(http|ftp)://'
+    desc: "远程文件包含 (RFI)"
+
+  # ---- SQL 注入特征 ----
+  - id: "sqli_union_select"
+    name: "UNION SELECT 注入"
+    severity: high
+    scope: request_path
+    type: regex
+    pattern: '(?i)union(\s|/\*\*/)*select'
+    desc: "UNION 注入特征"
+
+  - id: "sqli_sleep_benchmark"
+    name: "时间盲注 sleep/benchmark"
+    severity: high
+    scope: request_body
+    type: regex
+    pattern: '(?i)(sleep\s*\(|benchmark\s*\(|pg_sleep\s*\()'
+    desc: "时间盲注探测"
+
+  # ---- 命令注入 ----
+  - id: "cmd_injection_chain"
+    name: "命令注入管道链"
+    severity: high
+    scope: request_body
+    type: regex
+    pattern: '(?i)(;|\||&&|\|\|)\s*(cat|ls|id|whoami|uname|wget|curl|bash|sh|nc|python)\s'
+    desc: "命令拼接注入"
+
+  # ---- 路径穿越 ----
+  - id: "lfi_traversal"
+    name: "路径穿越 ../../"
+    severity: high
+    scope: request_path
+    type: regex
+    pattern: '(\.\./){2,}'
+    desc: "目录穿越 / LFI"
+
+  # ---- XXE ----
+  - id: "xxe_entity"
+    name: "XXE 外部实体"
+    severity: high
+    scope: request_body
+    type: regex
+    pattern: '(?i)<!ENTITY\s+\w+\s+SYSTEM'
+    desc: "XML 外部实体注入"
+
+  # ---- C2 beacon 特征 (固定 JARM/特征路径) ----
+  - id: "c2_cobalt_strike_beacon"
+    name: "Cobalt Strike beacon 路径"
+    severity: critical
+    scope: request_path
+    type: regex
+    pattern: '(?i)/(dpffi|include|api|init|submit)\.(php|jsp|asp|html)\?'
+    desc: "疑似 CS beacon 回连路径"
