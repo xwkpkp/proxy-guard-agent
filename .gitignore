@@ -25,12 +25,14 @@ env/
 # ---- 离线 wheel 包（体积大，公开包无分享价值）----
 wheelhouse/
 
-# ---- 运行时日志与临时数据 ----
+# ---- 运行时数据 ----
 *.log
 *.log.*
 logs/
 *.tmp
 *.bak
+*.db
+dead_cache.db
 
 # ---- IDE / 编辑器 ----
 .vscode/
