@@ -45,9 +45,38 @@ class ProxyCandidate:
         )
 
 
-async def _fetch_text(session: aiohttp.ClientSession, url: str, timeout: float = 20.0) -> str:
+def _parse_monosans_json(text: str, source_name: str) -> list[ProxyCandidate]:
+    """monosans proxies.json：[{protocol,host,port,timeout,exit_ip,asn,geolocation}]"""
+    import json
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+        obj = json.loads(text)
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[ProxyCandidate] = []
+    for item in obj:
+        ip = item.get("host")
+        port = item.get("port")
+        if not ip or not port:
+            continue
+        geo = item.get("geolocation") or {}
+        country = (geo.get("country") or {}).get("iso_code", "") or ""
+        out.append(ProxyCandidate(
+            ip=str(ip),
+            port=int(port),
+            scheme=(item.get("protocol") or "http").lower(),
+            source=source_name,
+            country=country,
+        ))
+    return out
+
+
+async def _fetch_text(session: aiohttp.ClientSession, url: str, timeout: float = 20.0,
+                      proxy: str = "") -> str:
+    try:
+        kwargs: dict = {}
+        if proxy:
+            kwargs["proxy"] = proxy
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), **kwargs) as resp:
             if resp.status != 200:
                 log.debug("源 %s 返回非200: %s", url, resp.status)
                 return ""
@@ -103,13 +132,13 @@ def _scheme_from_url(url: str, name: str) -> str:
     return "http"
 
 
-async def fetch_all(sources: list[dict]) -> list[ProxyCandidate]:
-    """并发抓取所有源，去重后返回候选列表。"""
+async def fetch_all(sources: list[dict], fetch_proxy: str = "") -> list[ProxyCandidate]:
+    """并发抓取所有源，去重后返回候选列表。fetch_proxy 走它抓 GitHub raw。"""
     seen: set[ProxyCandidate] = set()
     results: list[ProxyCandidate] = []
     headers = {"User-Agent": "Mozilla/5.0 (proxy-guard/0.1)"}
     async with aiohttp.ClientSession(headers=headers) as session:
-        tasks = [_fetch_text(session, s["url"]) for s in sources]
+        tasks = [_fetch_text(session, s["url"], proxy=fetch_proxy) for s in sources]
         texts = await asyncio.gather(*tasks, return_exceptions=True)
         for src, raw in zip(sources, texts):
             if isinstance(raw, Exception) or not raw:
@@ -118,6 +147,8 @@ async def fetch_all(sources: list[dict]) -> list[ProxyCandidate]:
             fmt = src.get("format", "plain")
             if fmt == "geonode":
                 cands = _parse_geonode(raw, name)
+            elif fmt == "monosans_json":
+                cands = _parse_monosans_json(raw, name)
             else:
                 scheme = _scheme_from_url(src["url"], name)
                 cands = _parse_plain(raw, name, scheme)

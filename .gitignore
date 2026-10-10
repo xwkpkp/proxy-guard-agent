@@ -42,6 +42,8 @@ logs/
 Thumbs.db
 
 # ---- 配置覆盖（本地个人配置不入库）----
+# config.yaml 由用户从 config.example.yaml 复制生成，不入库
+config.yaml
 config.local.yaml
 config.*.local.yaml
 

@@ -5,8 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+
+import aiohttp
+from aiohttp import web
 
 from .pool import ProxyPool
 from .rotator import Rotator
@@ -25,6 +29,8 @@ class ProxyGuardAgent:
         s = config["shield"]
 
         self.stats_interval = a.get("stats_interval", 30)
+        self.api_host = a.get("api_host", "127.0.0.1")
+        self.api_port = a.get("api_port", 8889)
 
         self.pool = ProxyPool(
             sources=p["sources"],
@@ -33,6 +39,8 @@ class ProxyGuardAgent:
             validate_concurrency=p.get("validate_concurrency", 60),
             min_size=p.get("min_pool_size", 8),
             max_size=p.get("max_pool_size", 200),
+            fetch_proxy=p.get("fetch_proxy", ""),
+            dead_cache_path=p.get("dead_cache_path", "dead_cache.db"),
         )
         self.rotator = Rotator(
             pool=self.pool,
@@ -57,6 +65,8 @@ class ProxyGuardAgent:
             cert_store_dir=s.get("cert_store_dir", "cert_store"),
         )
         self._stat_task: asyncio.Task | None = None
+        self._api_runner: web.AppRunner | None = None
+        self._api_site: web.BaseSite | None = None
         self._stopping = False
 
     async def _print_stats(self) -> None:
@@ -75,11 +85,76 @@ class ProxyGuardAgent:
                 dict(sorted(sh.by_rule.items(), key=lambda x: -x[1])[:3]),
             )
 
+    # ---- 状态 API ----
+
+    def _build_api(self) -> web.Application:
+        app = web.Application()
+
+        async def health(_request: web.Request) -> web.Response:
+            return web.json_response({"status": "ok", "ts": time.time()})
+
+        async def stats(_request: web.Request) -> web.Response:
+            sh = self.shield.stats
+            return web.json_response({
+                "pool_size": await self.pool.size(),
+                "rotator": self.rotator.metrics(),
+                "router": self.router.metrics(),
+                "shield": {
+                    "requests": sh.requests_total,
+                    "blocked": sh.blocked_total,
+                    "redline_blocked": sh.redline_blocked,
+                    "ssrf_blocked": sh.ssrf_blocked,
+                    "injection_detected": sh.injection_detected,
+                    "tls_intercepted": sh.tls_intercepted,
+                    "by_rule": dict(sorted(sh.by_rule.items(), key=lambda x: -x[1])[:5]),
+                },
+            })
+
+        async def pool_list(_request: web.Request) -> web.Response:
+            proxies = await self.pool.all()
+            country = _request.query.get("country", "")
+            scheme = _request.query.get("scheme", "")
+            limit = int(_request.query.get("limit", "50"))
+            rows = []
+            for vp in proxies:
+                if country and vp.country.upper() != country.upper():
+                    continue
+                if scheme and vp.scheme != scheme:
+                    continue
+                rows.append({
+                    "endpoint": vp.url,
+                    "scheme": vp.scheme,
+                    "country": vp.country,
+                    "exit_ip": vp.exit_ip,
+                    "asn": vp.asn,
+                    "latency_ms": vp.latency_ms,
+                    "anonymity": vp.anonymity,
+                    "streak": vp.streak,
+                    "success_count": vp.success_count,
+                    "fail_count": vp.fail_count,
+                })
+            rows.sort(key=lambda x: x["latency_ms"])
+            return web.json_response({"count": len(rows), "proxies": rows[:limit]})
+
+        app.router.add_get("/health", health)
+        app.router.add_get("/stats", stats)
+        app.router.add_get("/pool", pool_list)
+        return app
+
+    async def _start_api(self) -> None:
+        app = self._build_api()
+        self._api_runner = web.AppRunner(app)
+        await self._api_runner.setup()
+        self._api_site = web.TCPSite(self._api_runner, self.api_host, self.api_port)
+        await self._api_site.start()
+        log.info("📡 状态API: http://%s:%d/{health,stats,pool}", self.api_host, self.api_port)
+
     async def start(self) -> None:
         log.info("🚀 Proxy Guard Agent 启动中...")
         await self.pool.start(self.config["pool"]["refresh_interval"])
         await self.rotator.start()
         await self.shield.start()
+        await self._start_api()
         self._stat_task = asyncio.create_task(self._print_stats())
         log.info("✅ Agent 就绪。本地代理: %s:%d", self.config["agent"]["listen_host"], self.config["agent"]["listen_port"])
         log.info("   使用方式: HTTP_PROXY=http://127.0.0.1:%d curl http://example.com", self.config["agent"]["listen_port"])
@@ -88,6 +163,10 @@ class ProxyGuardAgent:
         self._stopping = True
         if self._stat_task:
             self._stat_task.cancel()
+        if self._api_site:
+            await self._api_site.stop()
+        if self._api_runner:
+            await self._api_runner.cleanup()
         await self.shield.stop()
         await self.rotator.stop()
         await self.pool.stop()

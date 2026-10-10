@@ -16,6 +16,34 @@ from .validator import ValidatedProxy, is_blacklisted, my_ip, validate_batch
 log = logging.getLogger("proxy_guard.pool")
 
 
+class DeadCache:
+    """SQLite dead-cache：记录近期失败的代理，TTL 内跳过验证。"""
+
+    def __init__(self, path: str = "dead_cache.db") -> None:
+        import sqlite3
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS dead (key TEXT PRIMARY KEY, ts REAL)"
+        )
+        self._conn.commit()
+
+    def is_dead(self, key: str, ttl: float = 600.0) -> bool:
+        row = self._conn.execute("SELECT ts FROM dead WHERE key=?", (key,)).fetchone()
+        if not row:
+            return False
+        if time.time() - row[0] > ttl:
+            self._conn.execute("DELETE FROM dead WHERE key=?", (key,))
+            self._conn.commit()
+            return False
+        return True
+
+    def mark_dead(self, key: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO dead (key, ts) VALUES (?, ?)", (key, time.time())
+        )
+        self._conn.commit()
+
+
 @dataclass
 class PoolStats:
     total_fetched: int = 0
@@ -36,6 +64,8 @@ class ProxyPool:
         validate_concurrency: int = 60,
         min_size: int = 8,
         max_size: int = 200,
+        fetch_proxy: str = "",
+        dead_cache_path: str = "",
     ) -> None:
         self.sources = sources
         self.judge_urls = judge_urls
@@ -43,6 +73,8 @@ class ProxyPool:
         self.validate_concurrency = validate_concurrency
         self.min_size = min_size
         self.max_size = max_size
+        self.fetch_proxy = fetch_proxy
+        self._dead_cache = DeadCache(dead_cache_path) if dead_cache_path else None
 
         self._proxies: dict[str, ValidatedProxy] = {}  # key -> proxy
         self._lock = asyncio.Lock()
@@ -55,11 +87,18 @@ class ProxyPool:
 
     async def _do_refresh(self) -> None:
         log.info("开始刷新代理池...")
-        cands = await fetch_all(self.sources)
+        cands = await fetch_all(self.sources, fetch_proxy=self.fetch_proxy)
         self.stats.total_fetched += len(cands)
         if not cands:
             log.warning("未抓到任何代理候选，保留现有池")
             return
+        # 跳过 dead-cache 内的代理
+        if self._dead_cache:
+            before = len(cands)
+            cands = [c for c in cands if not self._dead_cache.is_dead(
+                f"{c.ip}:{c.port}:{c.scheme}")]
+            if before - len(cands) > 0:
+                log.info("dead-cache 跳过 %d 个近期失败代理", before - len(cands))
         # 取本机 IP（用于匿名度判断），失败也不阻塞
         try:
             self._my_ip = await my_ip()
@@ -75,9 +114,14 @@ class ProxyPool:
         )
         self.stats.total_validated += len(validated)
         async with self._lock:
-            # 合并：新验证通过的覆盖，保留老的可用代理
+            # 合并：新验证通过的覆盖，保留老的可用代理，streak 累加
             new_map: dict[str, ValidatedProxy] = {}
             for vp in validated[: self.max_size]:
+                # 老池里有的累加 streak
+                old = self._proxies.get(vp.key)
+                if old:
+                    vp.streak = old.streak + 1
+                    vp.success_count = old.success_count + 1
                 new_map[vp.key] = vp
             # 老的仍可用的保留（避免刷新瞬间池子变空），跳过黑名单
             for k, vp in self._proxies.items():
@@ -139,8 +183,11 @@ class ProxyPool:
             vp = self._proxies.get(key)
             if vp:
                 vp.fail_count += 1
+                vp.streak = 0  # 失败重置连续存活
                 if vp.fail_count >= 3:
                     del self._proxies[key]
+                    if self._dead_cache:
+                        self._dead_cache.mark_dead(key)
                     log.info("剔除失效代理 %s (连续失败 %d)", key, vp.fail_count)
 
     async def mark_ok(self, key: str) -> None:

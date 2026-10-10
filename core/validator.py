@@ -46,9 +46,13 @@ class ValidatedProxy:
     latency_ms: float          # 验证时实测延迟
     anonymity: str = "unknown" # transparent / anonymous / elite / unknown
     country: str = ""
+    exit_ip: str = ""          # 代理出口真实IP
+    asn: str = ""              # ASN 组织
     last_ok: float = field(default_factory=time.time)
     fail_count: int = 0
     use_count: int = 0
+    success_count: int = 0     # 累计成功次数
+    streak: int = 0            # 连续存活验证次数（正向指标）
     injection_flag: bool = False   # 验证时检测到内容注入
     blacklisted: bool = False      # 被拉黑
 
@@ -90,9 +94,11 @@ async def _validate_one(
         return None
 
     anonymity = "anonymous"
+    exit_ip = ""
     m = _ORIGIN_RE.search(body)
     if m:
         origin = m.group(1).strip()
+        exit_ip = origin
         if my_public_ip and origin == my_public_ip:
             anonymity = "transparent"
         else:
@@ -108,6 +114,24 @@ async def _validate_one(
         blacklist(f"{cand.ip}:{cand.port}:{cand.scheme}", "验证响应注入脚本")
         return None
 
+    # ---- 查出口IP的国家/ASN（ip-api.com 免费，无需key）----
+    country = cand.country
+    asn = ""
+    if exit_ip:
+        try:
+            async with session.get(
+                f"http://ip-api.com/line/{exit_ip}?fields=countryCode,as",
+                timeout=aiohttp.ClientTimeout(total=4),
+            ) as gr:
+                if gr.status == 200:
+                    parts = (await gr.text()).strip().split("\n")
+                    if len(parts) >= 1 and parts[0]:
+                        country = parts[0].strip()
+                    if len(parts) >= 2:
+                        asn = parts[1].strip()
+        except Exception:  # noqa: BLE001
+            pass
+
     return ValidatedProxy(
         ip=cand.ip,
         port=cand.port,
@@ -115,8 +139,11 @@ async def _validate_one(
         source=cand.source,
         latency_ms=round(latency, 1),
         anonymity=anonymity,
-        country=cand.country,
+        country=country,
+        exit_ip=exit_ip,
+        asn=asn,
         injection_flag=injection_flag,
+        streak=1,
     )
 
 
