@@ -48,6 +48,7 @@ class Shield:
         self,
         rotator: Rotator,
         router: DomainRouter,
+        judgment_queue=None,
         listen_host: str = "127.0.0.1",
         listen_port: int = 8888,
         scan_request: bool = True,
@@ -61,6 +62,7 @@ class Shield:
     ) -> None:
         self.rotator = rotator
         self.router = router
+        self.judgment_queue = judgment_queue
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.scan_request = scan_request
@@ -89,16 +91,21 @@ class Shield:
             self.stats.by_rule[h.rule_id] = self.stats.by_rule.get(h.rule_id, 0) + 1
             self.stats.by_severity[h.severity] = self.stats.by_severity.get(h.severity, 0) + 1
 
-    async def _enforce(self, hits: list[detectors.Hit], ctx: str) -> bool:
+    async def _enforce(self, hits: list[detectors.Hit], ctx: str,
+                       sample: str = "", target: str = "") -> bool:
         if not hits:
             return False
         self._record_hits(hits)
         max_sev = max(hits.severity for h in hits) if hits else "low"
+        rule_hits = ", ".join(f"{h.rule_id}({h.severity})" for h in hits)
         for h in sorted(hits, key=lambda x: detectors.severity_rank(x.severity), reverse=True):
             log.warning(
                 "⚠ 检测命中 [%s] severity=%s | %s | %s | %s",
                 ctx, h.severity, h.rule_id, h.rule_name, h.desc,
             )
+        # ---- 异步入 LLM 研判队列 ----
+        if self.judgment_queue is not None and sample:
+            await self.judgment_queue.put(sample, rule_hits, ctx, target or ctx)
         if self.switch_on_detect:
             await self.rotator.force_rotate("shield-detect")
             self.stats.rotated_on_detect += 1
@@ -203,7 +210,8 @@ class Shield:
                 method, path + ("?" + request.url.query if request.url.query else ""),
                 req_headers, body,
             )
-            if await self._enforce(hits, f"request {method} {target}"):
+            req_sample = (path + ("?" + request.url.query if request.url.query else "") + " | " + body.decode("utf-8","ignore")[:2048])[:4096]
+            if await self._enforce(hits, f"request {method} {target}", sample=req_sample, target=target):
                 return web.Response(status=403, text="proxy-guard: request blocked (malicious traffic)")
 
         status, resp_headers, resp_body = await self._forward(method, target, req_headers, body)
@@ -229,7 +237,7 @@ class Shield:
             if _is_scannable(ctype):
                 scan_body = resp_body[: self.max_body_scan].decode("utf-8", "ignore")
                 hits = detectors.scan_response(scan_body, self.script_rules)
-                if await self._enforce(hits, f"response {target}"):
+                if await self._enforce(hits, f"response {target}", sample=scan_body[:4096], target=target):
                     return web.Response(status=403, text="proxy-guard: response blocked (malicious script)")
 
         out = web.Response(status=status, body=resp_body)
@@ -258,7 +266,7 @@ class Shield:
 
         if self.scan_request:
             hits = detectors.scan_request("CONNECT", "/" + host, {}, b"", self.traffic_rules)
-            if await self._enforce(hits, f"CONNECT {host_port}"):
+            if await self._enforce(hits, f"CONNECT {host_port}", sample=host, target=host):
                 return web.Response(status=403, text="proxy-guard: CONNECT blocked")
 
         if self.mitm_enabled and self.cert_store is not None:

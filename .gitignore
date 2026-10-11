@@ -33,6 +33,7 @@ logs/
 *.bak
 *.db
 dead_cache.db
+llm_judgments.jsonl
 
 # ---- IDE / 编辑器 ----
 .vscode/

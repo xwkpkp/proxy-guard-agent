@@ -16,6 +16,7 @@ from .pool import ProxyPool
 from .rotator import Rotator
 from .router import DomainRouter
 from .shield import Shield
+from .llm import LLMClient, JudgmentQueue
 
 log = logging.getLogger("proxy_guard.agent")
 
@@ -50,9 +51,26 @@ class ProxyGuardAgent:
             cooldown=r.get("cooldown", 30.0),
         )
         self.router = DomainRouter(config)
+        # ---- LLM 异步研判 ----
+        llm_cfg = config.get("llm", {})
+        llm_client = None
+        if llm_cfg.get("enabled") and llm_cfg.get("api_key"):
+            llm_client = LLMClient(
+                base_url=llm_cfg.get("base_url", "https://api.openai.com"),
+                api_key=llm_cfg["api_key"],
+                model=llm_cfg.get("model", "gpt-4o-mini"),
+                proxy=llm_cfg.get("proxy", ""),
+                timeout=llm_cfg.get("timeout", 30.0),
+            )
+        self.judgment_queue = JudgmentQueue(
+            client=llm_client,
+            output_path=llm_cfg.get("output_path", "llm_judgments.jsonl"),
+            max_concurrent=llm_cfg.get("max_concurrent", 2),
+        )
         self.shield = Shield(
             rotator=self.rotator,
             router=self.router,
+            judgment_queue=self.judgment_queue,
             listen_host=a["listen_host"],
             listen_port=a["listen_port"],
             scan_request=s.get("scan_request", True),
@@ -84,6 +102,13 @@ class ProxyGuardAgent:
                 sh.redline_blocked, sh.ssrf_blocked, sh.injection_detected,
                 dict(sorted(sh.by_rule.items(), key=lambda x: -x[1])[:3]),
             )
+            llm = self.judgment_queue.metrics()
+            if llm["analyzed"] > 0 or llm["queued"] > 0:
+                log.info(
+                    "🧠 LLM研判 | 队列=%d 已分析=%d 恶意=%d 可疑=%d 误报纠正=%d 失败=%d",
+                    llm["queue_size"], llm["analyzed"], llm["malicious"],
+                    llm["suspicious"], llm["benign_overrides"], llm["failed"],
+                )
 
     # ---- 状态 API ----
 
@@ -139,6 +164,11 @@ class ProxyGuardAgent:
         app.router.add_get("/health", health)
         app.router.add_get("/stats", stats)
         app.router.add_get("/pool", pool_list)
+
+        async def judgments(_request: web.Request) -> web.Response:
+            return web.json_response(self.judgment_queue.metrics())
+
+        app.router.add_get("/judgments", judgments)
         return app
 
     async def _start_api(self) -> None:
@@ -155,6 +185,7 @@ class ProxyGuardAgent:
         await self.rotator.start()
         await self.shield.start()
         await self._start_api()
+        await self.judgment_queue.start()
         self._stat_task = asyncio.create_task(self._print_stats())
         log.info("✅ Agent 就绪。本地代理: %s:%d", self.config["agent"]["listen_host"], self.config["agent"]["listen_port"])
         log.info("   使用方式: HTTP_PROXY=http://127.0.0.1:%d curl http://example.com", self.config["agent"]["listen_port"])
@@ -168,6 +199,7 @@ class ProxyGuardAgent:
         if self._api_runner:
             await self._api_runner.cleanup()
         await self.shield.stop()
+        await self.judgment_queue.stop()
         await self.rotator.stop()
         await self.pool.stop()
         log.info("Agent 已停止")

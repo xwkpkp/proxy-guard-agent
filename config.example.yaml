@@ -56,3 +56,13 @@ shield:
   max_concurrent: 20
   csp_inject: true
   detect_injection: true
+
+llm:
+  enabled: false
+  base_url: "https://api.openai.com"
+  api_key: ""
+  model: "gpt-4o-mini"
+  proxy: ""
+  timeout: 30.0
+  max_concurrent: 2
+  output_path: "llm_judgments.jsonl"
